@@ -32,7 +32,7 @@
     },
     {
       "name": "openai",
-      "default_model": "gpt-3.5-turbo",
+      "default_model": "gpt-4o",
       "api_key_env": "OPENAI_API_KEY"
     }
   ]

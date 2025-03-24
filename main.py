@@ -1,6 +1,5 @@
 import os
 import PyPDF2
-import openai
 import json
 import logging
 from datetime import datetime
@@ -13,6 +12,7 @@ import unicodedata
 import re
 import argparse
 from dotenv import load_dotenv
+import requests
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -47,6 +47,26 @@ class PaperSummary(BaseModel):
     significance: str
     limitations: str
     future_research: str
+    
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "title": "Example Paper Title",
+                    "authors": ["Author One", "Author Two"],
+                    "year": 2023,
+                    "research_question": "What is the research question?",
+                    "theoretical_framework": "The theoretical framework used",
+                    "methodology": "The methodology used",
+                    "main_arguments": ["Argument one", "Argument two"],
+                    "findings": "The main findings",
+                    "significance": "The significance of the findings",
+                    "limitations": "The limitations of the study",
+                    "future_research": "Suggestions for future research"
+                }
+            ]
+        }
+    }
 
 def clean_text(text: str) -> str:
     """Clean and normalize text to handle special characters."""
@@ -94,6 +114,320 @@ def check_api_key_present(api_key_env: str) -> bool:
     api_key = os.environ.get(api_key_env)
     return api_key is not None and api_key.strip() != ""
 
+def call_openai(prompt: str, system_message: str, max_tokens: int, temperature: float, json_mode: bool) -> str:
+    """Call the OpenAI API directly."""
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise ApiKeyMissingException("OpenAI API key is missing")
+    
+    try:
+        import openai
+        client = openai.OpenAI(api_key=api_key)
+        
+        messages = [
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": prompt}
+        ]
+        
+        kwargs = {
+            "model": "gpt-4o",
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature
+        }
+        
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+            
+        response = client.chat.completions.create(**kwargs)
+        return response.choices[0].message.content
+    except openai.RateLimitError:
+        raise RateLimitException("OpenAI rate limit exceeded")
+    except openai.AuthenticationError:
+        raise ApiKeyMissingException("Invalid OpenAI API key")
+    except openai.APIConnectionError:
+        raise ProviderUnavailableException("Cannot connect to OpenAI API")
+    except Exception as e:
+        raise ProviderError(f"OpenAI error: {str(e)}")
+
+def call_anthropic(prompt: str, system_message: str, max_tokens: int, temperature: float, json_mode: bool) -> str:
+    """Call the Anthropic API directly."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise ApiKeyMissingException("Anthropic API key is missing")
+    
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        
+        kwargs = {
+            "model": "claude-3-sonnet-20240229",
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "system": system_message,
+            "messages": [
+                {"role": "user", "content": prompt}
+            ]
+        }
+        
+        response = client.messages.create(**kwargs)
+        return response.content[0].text
+    except Exception as e:
+        error_message = str(e).lower()
+        if "rate" in error_message and "limit" in error_message:
+            raise RateLimitException("Anthropic rate limit exceeded")
+        elif "auth" in error_message or "key" in error_message:
+            raise ApiKeyMissingException("Invalid Anthropic API key")
+        elif "connec" in error_message or "unavailable" in error_message:
+            raise ProviderUnavailableException("Cannot connect to Anthropic API")
+        else:
+            raise ProviderError(f"Anthropic error: {str(e)}")
+
+def call_gemini(prompt: str, system_message: str, max_tokens: int, temperature: float, json_mode: bool) -> str:
+    """Call the Google Gemini API directly."""
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise ApiKeyMissingException("Gemini API key is missing")
+    
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=api_key)
+        
+        # Get available models
+        models = genai.list_models()
+        available_models = [model.name for model in models]
+        logger.info(f"Available Gemini models: {available_models}")
+        
+        # Find an appropriate model
+        model_name = None
+        for name in available_models:
+            if "gemini-1.5" in name:
+                model_name = name
+                break
+            elif "gemini-1.0-pro" in name:
+                model_name = name
+                break
+        
+        if not model_name:
+            # Fall back to the first available model
+            model_name = available_models[0] if available_models else None
+        
+        if not model_name:
+            raise ProviderError("No Gemini models available")
+            
+        logger.info(f"Using Gemini model: {model_name}")
+        
+        # Combine system message and prompt for Gemini
+        full_prompt = f"{system_message}\n\n{prompt}"
+        
+        generation_config = {
+            "temperature": temperature,
+            "max_output_tokens": max_tokens,
+            "top_p": 0.9,
+            "top_k": 40
+        }
+        
+        model = genai.GenerativeModel(model_name)
+        response = model.generate_content(full_prompt, generation_config=generation_config)
+        
+        return response.text
+    except Exception as e:
+        error_message = str(e).lower()
+        if "rate" in error_message and "limit" in error_message:
+            raise RateLimitException("Gemini rate limit exceeded")
+        elif "auth" in error_message or "key" in error_message:
+            raise ApiKeyMissingException("Invalid Gemini API key")
+        elif "connec" in error_message or "unavailable" in error_message:
+            raise ProviderUnavailableException("Cannot connect to Gemini API")
+        else:
+            raise ProviderError(f"Gemini error: {str(e)}")
+
+def call_mistral(prompt: str, system_message: str, max_tokens: int, temperature: float, json_mode: bool) -> str:
+    """Call the Mistral API directly."""
+    api_key = os.environ.get("MISTRAL_API_KEY")
+    if not api_key:
+        raise ApiKeyMissingException("Mistral API key is missing")
+    
+    try:
+        # Use the new Mistral client API
+        from mistral.client import MistralClient
+        from mistral.models.chat_completion import ChatMessage
+        
+        client = MistralClient(api_key=api_key)
+        
+        messages = [
+            ChatMessage(role="system", content=system_message),
+            ChatMessage(role="user", content=prompt)
+        ]
+        
+        response = client.chat(
+            model="mistral-large-latest",
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature
+        )
+        
+        return response.choices[0].message.content
+    except Exception as e:
+        error_message = str(e).lower()
+        if "rate" in error_message and "limit" in error_message:
+            raise RateLimitException("Mistral rate limit exceeded")
+        elif "auth" in error_message or "key" in error_message:
+            raise ApiKeyMissingException("Invalid Mistral API key")
+        elif "connec" in error_message or "unavailable" in error_message:
+            raise ProviderUnavailableException("Cannot connect to Mistral API")
+        else:
+            raise ProviderError(f"Mistral error: {str(e)}")
+
+def call_groq(prompt: str, system_message: str, max_tokens: int, temperature: float, json_mode: bool) -> str:
+    """Call the Groq API directly."""
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        raise ApiKeyMissingException("Groq API key is missing")
+    
+    try:
+        import groq
+        client = groq.Groq(api_key=api_key)
+        
+        messages = [
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": prompt}
+        ]
+        
+        kwargs = {
+            "model": "llama3-8b-8192",
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature
+        }
+        
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+            
+        response = client.chat.completions.create(**kwargs)
+        return response.choices[0].message.content
+    except Exception as e:
+        error_message = str(e).lower()
+        if "rate" in error_message and "limit" in error_message:
+            raise RateLimitException("Groq rate limit exceeded")
+        elif "auth" in error_message or "key" in error_message:
+            raise ApiKeyMissingException("Invalid Groq API key")
+        elif "connec" in error_message or "unavailable" in error_message:
+            raise ProviderUnavailableException("Cannot connect to Groq API")
+        else:
+            raise ProviderError(f"Groq error: {str(e)}")
+
+def call_openrouter(prompt: str, system_message: str, max_tokens: int, temperature: float, json_mode: bool) -> str:
+    """Call the OpenRouter API directly."""
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        raise ApiKeyMissingException("OpenRouter API key is missing")
+    
+    try:
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "HTTP-Referer": "https://ai-literature-review-generator.local",
+            "X-Title": "AI Literature Review Generator",
+            "Content-Type": "application/json"
+        }
+        
+        messages = [
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": prompt}
+        ]
+        
+        data = {
+            "model": "deepseek/deepseek-r1-distill-llama-8b",
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature
+        }
+        
+        if json_mode:
+            data["response_format"] = {"type": "json_object"}
+            
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers=headers,
+            json=data
+        )
+        
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
+    except requests.exceptions.RequestException as e:
+        error_message = str(e).lower()
+        if "429" in error_message:
+            raise RateLimitException("OpenRouter rate limit exceeded")
+        elif "401" in error_message or "403" in error_message:
+            raise ApiKeyMissingException("Invalid OpenRouter API key")
+        elif "connec" in error_message or "unavailable" in error_message:
+            raise ProviderUnavailableException("Cannot connect to OpenRouter API")
+        else:
+            raise ProviderError(f"OpenRouter error: {str(e)}")
+
+def call_deepseek(prompt: str, system_message: str, max_tokens: int, temperature: float, json_mode: bool) -> str:
+    """Call the DeepSeek API directly."""
+    api_key = os.environ.get("DEEPSEEK_API_KEY")
+    if not api_key:
+        raise ApiKeyMissingException("DeepSeek API key is missing")
+    
+    try:
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        messages = [
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": prompt}
+        ]
+        
+        data = {
+            "model": "deepseek-r1-distill-llama-8b",
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature
+        }
+        
+        response = requests.post(
+            "https://api.deepseek.com/v1/chat/completions",
+            headers=headers,
+            json=data
+        )
+        
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
+    except requests.exceptions.RequestException as e:
+        error_message = str(e).lower()
+        if "429" in error_message:
+            raise RateLimitException("DeepSeek rate limit exceeded")
+        elif "401" in error_message or "403" in error_message:
+            raise ApiKeyMissingException("Invalid DeepSeek API key")
+        elif "connec" in error_message or "unavailable" in error_message:
+            raise ProviderUnavailableException("Cannot connect to DeepSeek API")
+        else:
+            raise ProviderError(f"DeepSeek error: {str(e)}")
+
+def clean_json_response(content: str) -> str:
+    """
+    Clean a JSON response that might be wrapped in markdown code blocks.
+    
+    Args:
+        content: The response content that might contain JSON
+        
+    Returns:
+        The cleaned JSON string
+    """
+    # Check if the content is wrapped in ```json or ``` code blocks
+    json_pattern = r'```(?:json)?\s*([\s\S]*?)\s*```'
+    match = re.search(json_pattern, content)
+    
+    if match:
+        # Extract the JSON content from within the code blocks
+        return match.group(1).strip()
+    
+    return content
+
 @retry(
     retry=retry_if_exception_type((RateLimitException, ApiKeyMissingException)),
     stop=stop_after_attempt(3),
@@ -123,150 +457,112 @@ def call_provider_with_fallback(
     Returns:
         Dict containing the response from the successful provider
     """
-    try:
-        # Import litellm here to avoid global import issues
-        import litellm
-        providers = load_providers_config(provider_config_path)
+    providers = load_providers_config(provider_config_path)
+    
+    if not providers:
+        raise ValueError("No providers configured. Please check your configuration file.")
+    
+    # If custom order provided, reorder providers accordingly
+    if custom_provider_order:
+        # Create a mapping of provider names to their configurations
+        provider_map = {p["name"]: p for p in providers}
         
-        if not providers:
-            raise ValueError("No providers configured. Please check your configuration file.")
+        # Create a new ordered list based on custom order
+        ordered_providers = []
+        for provider_name in custom_provider_order:
+            if provider_name in provider_map:
+                ordered_providers.append(provider_map[provider_name])
         
-        # If custom order provided, reorder providers accordingly
-        if custom_provider_order:
-            # Create a mapping of provider names to their configurations
-            provider_map = {p["name"]: p for p in providers}
-            
-            # Create a new ordered list based on custom order
-            ordered_providers = []
-            for provider_name in custom_provider_order:
-                if provider_name in provider_map:
-                    ordered_providers.append(provider_map[provider_name])
-            
-            # Add any remaining providers not in the custom order at the end
-            for provider in providers:
-                if provider["name"] not in custom_provider_order:
-                    ordered_providers.append(provider)
-                    
-            providers = ordered_providers
-        
-        # Track errors for detailed reporting
-        errors = {}
-        available_providers = []
-        unavailable_providers = []
-        
-        # First, check which providers have API keys available
+        # Add any remaining providers not in the custom order at the end
         for provider in providers:
-            provider_name = provider["name"]
-            api_key_env = provider["api_key_env"]
-            
-            if check_api_key_present(api_key_env):
-                available_providers.append(provider)
-            else:
-                unavailable_providers.append(provider_name)
-                errors[provider_name] = f"API key not configured ({api_key_env})"
+            if provider["name"] not in custom_provider_order:
+                ordered_providers.append(provider)
+                
+        providers = ordered_providers
+    
+    # Track errors for detailed reporting
+    errors = {}
+    available_providers = []
+    unavailable_providers = []
+    
+    # First, check which providers have API keys available
+    for provider in providers:
+        provider_name = provider["name"]
+        api_key_env = provider["api_key_env"]
         
-        if unavailable_providers:
-            logger.info(f"Skipping providers with missing API keys: {', '.join(unavailable_providers)}")
+        if check_api_key_present(api_key_env):
+            available_providers.append(provider)
+        else:
+            unavailable_providers.append(provider_name)
+            errors[provider_name] = f"API key not configured ({api_key_env})"
+    
+    if unavailable_providers:
+        logger.info(f"Skipping providers with missing API keys: {', '.join(unavailable_providers)}")
+        
+    if not available_providers:
+        missing_keys = [f"{p['name']} ({p['api_key_env']})" for p in providers]
+        raise ApiKeyMissingException(
+            f"No API keys found for any provider. Please set at least one of: {', '.join(missing_keys)}"
+        )
+    
+    logger.info(f"Attempting to use providers in order: {[p['name'] for p in available_providers]}")
+    
+    # Map provider names to their respective call functions
+    provider_call_functions = {
+        "openai": call_openai,
+        "anthropic": call_anthropic,
+        "gemini": call_gemini,
+        "mistral": call_mistral,
+        "groq": call_groq,
+        "openrouter": call_openrouter,
+        "deepseek": call_deepseek
+    }
+    
+    # Now try each provider that has an API key
+    for provider in available_providers:
+        provider_name = provider["name"]
+        model = provider["default_model"]
+        
+        # Skip if we don't have a call function for this provider
+        if provider_name not in provider_call_functions:
+            logger.warning(f"No call function implemented for provider: {provider_name}")
+            continue
             
-        if not available_providers:
-            missing_keys = [f"{p['name']} ({p['api_key_env']})" for p in providers]
-            raise ApiKeyMissingException(
-                f"No API keys found for any provider. Please set at least one of: {', '.join(missing_keys)}"
+        try:
+            logger.info(f"Trying provider: {provider_name} with model: {model}")
+            
+            # Call the provider-specific function
+            content = provider_call_functions[provider_name](
+                prompt=prompt,
+                system_message=system_message,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                json_mode=json_mode
             )
-        
-        logger.info(f"Attempting to use providers in order: {[p['name'] for p in available_providers]}")
-        
-        # Now try each provider that has an API key
-        for provider in available_providers:
-            provider_name = provider["name"]
-            model = provider["default_model"]
-            api_key_env = provider["api_key_env"]
-            api_key = os.environ.get(api_key_env)
             
-            try:
-                logger.info(f"Trying provider: {provider_name} with model: {model}")
-                
-                # Set the API key for the provider
-                if provider_name == "openai":
-                    litellm.openai_api_key = api_key
-                elif provider_name == "anthropic":
-                    litellm.anthropic_api_key = api_key
-                elif provider_name == "gemini":
-                    litellm.google_api_key = api_key
-                elif provider_name == "openrouter":
-                    litellm.openrouter_api_key = api_key
-                elif provider_name == "deepseek":
-                    litellm.deepseek_api_key = api_key
-                elif provider_name == "groq":
-                    litellm.groq_api_key = api_key
-                elif provider_name == "mistral":
-                    litellm.mistral_api_key = api_key
-                else:
-                    # For other providers, dynamically set the API key
-                    setattr(litellm, f"{provider_name}_api_key", api_key)
-                
-                # Call the model
-                messages = [
-                    {"role": "system", "content": system_message},
-                    {"role": "user", "content": prompt}
-                ]
-                
-                completion_kwargs = {
-                    "model": model,
-                    "messages": messages,
-                    "max_tokens": max_tokens,
-                    "temperature": temperature
-                }
-                
-                # Add JSON mode for providers that support it
-                if json_mode:
-                    # OpenAI and compatible providers
-                    if provider_name in ["openai", "openrouter", "anthropic", "azure", "groq"]:
-                        completion_kwargs["response_format"] = {"type": "json_object"}
-                
-                response = litellm.completion(**completion_kwargs)
-                
-                logger.info(f"Successfully received response from {provider_name}")
-                return {
-                    "content": response.choices[0].message.content,
-                    "provider": provider_name,
-                    "model": model
-                }
-                
-            except Exception as e:
-                error_msg = str(e)
-                errors[provider_name] = error_msg
-                logger.warning(f"Error with provider {provider_name}: {error_msg}")
-                
-                # Check for rate limit or availability errors to determine if we should retry or continue
-                if "rate limit" in error_msg.lower() or "too many requests" in error_msg.lower():
-                    logger.info(f"Rate limit hit with {provider_name}, trying next provider")
-                    continue  # Try the next provider
-                elif "unavailable" in error_msg.lower() or "service unavailable" in error_msg.lower():
-                    logger.info(f"Service unavailable for {provider_name}, trying next provider")
-                    continue  # Try the next provider
-                else:
-                    # For other errors, try to determine if we should continue or abort
-                    if "authentication" in error_msg.lower() or "api key" in error_msg.lower():
-                        # Authentication errors - try next provider
-                        logger.info(f"Authentication error with {provider_name}, trying next provider")
-                        continue
-                    elif "bad request" in error_msg.lower() or "invalid request" in error_msg.lower():
-                        # Request format errors - might be the same for all providers, but try next anyway
-                        logger.info(f"Bad request error with {provider_name}, trying next provider")
-                        continue
-                    else:
-                        # Unexpected error, but try next provider
-                        logger.info(f"Unexpected error with {provider_name}, trying next provider")
-                        continue
-        
-        # If we've tried all providers and none worked
-        error_details = "\n".join([f"{k}: {v}" for k, v in errors.items()])
-        raise ProviderError(f"All providers failed. Details:\n{error_details}")
-        
-    except ImportError:
-        logger.error("litellm not installed. Install using: pip install litellm")
-        raise ImportError("litellm not installed. Install using: pip install litellm")
+            logger.info(f"Successfully received response from {provider_name}")
+            return {
+                "content": content,
+                "provider": provider_name,
+                "model": model
+            }
+            
+        except (RateLimitException, ApiKeyMissingException, ProviderUnavailableException) as e:
+            error_msg = str(e)
+            errors[provider_name] = error_msg
+            logger.warning(f"Error with provider {provider_name}: {error_msg}")
+            # Continue to next provider
+            continue
+        except Exception as e:
+            error_msg = str(e)
+            errors[provider_name] = error_msg
+            logger.warning(f"Unexpected error with provider {provider_name}: {error_msg}")
+            # Continue to next provider for any error
+            continue
+    
+    # If we've tried all providers and none worked
+    error_details = "\n".join([f"{k}: {v}" for k, v in errors.items()])
+    raise ProviderError(f"All providers failed. Details:\n{error_details}")
 
 @retry(stop=stop_after_attempt(3), wait=wait_random_exponential(min=1, max=60))
 def analyze_pdf(text: str, filename: str, text_limit: int = 6000) -> PaperSummary:
@@ -290,7 +586,7 @@ def analyze_pdf(text: str, filename: str, text_limit: int = 6000) -> PaperSummar
     - future_research: string"""
 
     try:
-        system_message = "You are a helpful assistant that provides comprehensive academic summaries in JSON format."
+        system_message = "You are a helpful assistant that provides comprehensive academic summaries in JSON format. Respond with valid JSON only, no markdown code blocks."
         response = call_provider_with_fallback(
             prompt=prompt,
             system_message=system_message,
@@ -301,8 +597,18 @@ def analyze_pdf(text: str, filename: str, text_limit: int = 6000) -> PaperSummar
         
         logger.info(f"Analysis of {filename} completed using {response['provider']} with model {response['model']}")
         
+        # Clean the response in case it contains markdown code blocks
+        content = clean_json_response(response["content"])
+        
         # Parse the response content as JSON and create PaperSummary
-        summary = PaperSummary.parse_raw(response["content"])
+        try:
+            # Try the cleaned content first
+            summary = PaperSummary.model_validate_json(content)
+        except Exception as e:
+            logger.warning(f"Error parsing cleaned JSON: {str(e)}")
+            # If that fails, try to parse the original content
+            summary = PaperSummary.model_validate_json(response["content"])
+        
         return summary
     except Exception as e:
         logger.error(f"Error analyzing PDF {filename}: {str(e)}")
@@ -418,6 +724,8 @@ def parse_args():
                       help='Word limit for the final literature review (default: 7000)')
     parser.add_argument('--custom-provider-order', type=str, nargs='+',
                       help='Custom order of providers to try (e.g., "gemini openai anthropic")')
+    parser.add_argument('--files_to_process', type=int, default=None,
+                      help='Limit the number of PDF files to process (default: process all files)')
     return parser.parse_args()
 
 def main():
@@ -432,6 +740,11 @@ def main():
         if not pdf_files:
             logger.error("No PDF files found in the PDF folder. Exiting.")
             return
+        
+        # Limit the number of files to process if specified
+        if args.files_to_process is not None and args.files_to_process > 0:
+            pdf_files = pdf_files[:args.files_to_process]
+            logger.info(f"Processing {args.files_to_process} PDF files.")
         
         # Configure custom provider order if specified
         custom_provider_order = args.custom_provider_order if args.custom_provider_order else None
