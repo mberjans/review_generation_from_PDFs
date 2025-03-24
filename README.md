@@ -83,9 +83,10 @@ python main.py --provider gemini
 
 ### Advanced Usage
 
-1. Customize text analysis limit (characters per paper):
+1. Customize individual summary and final review lengths:
 ```bash
-python main.py --text-limit 10000
+# Analyze up to 10000 characters per paper and generate a 5000-word review
+python main.py --individual-summary-length 10000 --final-review-length 5000
 ```
 
 2. Use specific OpenAI model with custom settings:
@@ -93,7 +94,9 @@ python main.py --text-limit 10000
 python main.py --provider openai \
     --openai-model gpt-4-turbo-preview \
     --openai-temperature 0.8 \
-    --openai-max-tokens 4000
+    --openai-max-tokens 4000 \
+    --individual-summary-length 8000 \
+    --final-review-length 3000
 ```
 
 3. Use custom OpenAI-compatible API endpoint:
@@ -113,7 +116,8 @@ python main.py --provider gemini \
 
 ```
 --provider {openai,gemini}  The AI provider to use (default: openai)
---text-limit INT           Character limit for initial text analysis (default: 6000)
+--individual-summary-length INT  Character limit for initial text analysis per paper (default: 6000)
+--final-review-length INT        Word limit for the final literature review (default: 60000)
 
 # OpenAI-specific arguments
 --openai-model STR        OpenAI model to use (default: from env or gpt-4)

@@ -11,6 +11,7 @@ from tqdm import tqdm
 from tenacity import retry, stop_after_attempt, wait_random_exponential
 import unicodedata
 import re
+import argparse
 
 # Load environment variables and set up OpenAI client
 load_dotenv()
@@ -57,12 +58,12 @@ def extract_text_from_pdf(pdf_path: str) -> str:
         raise
 
 @retry(stop=stop_after_attempt(3), wait=wait_random_exponential(min=1, max=60))
-def analyze_pdf(text: str, filename: str) -> PaperSummary:
+def analyze_pdf(text: str, filename: str, text_limit: int = 6000) -> PaperSummary:
     """Analyze the content of a PDF and generate a structured summary."""
     prompt = f"""Analyze the following academic paper and provide a detailed summary in JSON format:
 
     Filename: {filename}
-    Text: {text[:6000]}  # Limit text to 6000 characters
+    Text: {text[:text_limit]}  # Limit text to {text_limit} characters
 
     Provide the summary in a structured JSON format with the following fields:
     - title: string
@@ -90,22 +91,22 @@ def analyze_pdf(text: str, filename: str) -> PaperSummary:
     summary = PaperSummary.parse_raw(response.choices[0].message.content)
     return summary
 
-def process_pdf(file_path: str) -> PaperSummary:
+def process_pdf(file_path: str, text_limit: int = 6000) -> PaperSummary:
     """Process a single PDF file."""
     filename = os.path.basename(file_path)
     logger.info(f"Processing: {filename}")
     text = extract_text_from_pdf(file_path)
-    return analyze_pdf(text, filename)
+    return analyze_pdf(text, filename, text_limit)
 
 @retry(stop=stop_after_attempt(3), wait=wait_random_exponential(min=1, max=60))
-def synthesize_reviews(summaries: List[PaperSummary]) -> str:
+def synthesize_reviews(summaries: List[PaperSummary], word_limit: int = 2500) -> str:
     """Synthesize multiple paper summaries into a comprehensive literature review."""
     prompt = f"""Create a comprehensive literature review based on the following paper summaries. 
     Focus on synthesizing information, comparing and contrasting key arguments, methodologies, and significance of findings. 
     Highlight any contradictions, agreements, or trends between authors. 
     Discuss the evolution of ideas and methodologies in the field.
     Identify gaps in the current research and suggest future research directions.
-    Keep the review under 2500 words.
+    Keep the review under {word_limit} words.
 
     Summaries: {[summary.dict() for summary in summaries]}
 
@@ -186,8 +187,18 @@ def find_pdf_folder():
     else:
         raise FileNotFoundError("PDF folder not found in the script directory.")
 
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description='Generate literature reviews from PDF papers.')
+    parser.add_argument('--individual-summary-length', type=int, default=6000,
+                      help='Character limit for initial text analysis per paper (default: 6000)')
+    parser.add_argument('--final-review-length', type=int, default=7000,
+                      help='Word limit for the final literature review (default: 60000)')
+    return parser.parse_args()
+
 def main():
     try:
+        args = parse_args()
         pdf_folder = find_pdf_folder()
         pdf_files = [f for f in os.listdir(pdf_folder) if f.endswith('.pdf')]
         
@@ -197,7 +208,8 @@ def main():
         
         summaries = []
         with ThreadPoolExecutor(max_workers=4) as executor:
-            futures = [executor.submit(process_pdf, os.path.join(pdf_folder, pdf)) for pdf in pdf_files]
+            futures = [executor.submit(process_pdf, os.path.join(pdf_folder, pdf), args.individual_summary_length) 
+                      for pdf in pdf_files]
             for future in tqdm(as_completed(futures), total=len(pdf_files), desc="Analyzing PDFs"):
                 try:
                     summary = future.result()
@@ -210,7 +222,7 @@ def main():
             return
 
         logger.info("Synthesizing literature review...")
-        literature_review = synthesize_reviews(summaries)
+        literature_review = synthesize_reviews(summaries, args.final_review_length)
         
         paper_list = create_paper_list(summaries)
         
