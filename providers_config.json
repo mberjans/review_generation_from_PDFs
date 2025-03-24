@@ -1,0 +1,39 @@
+{
+  "providers": [
+    {
+      "name": "gemini",
+      "default_model": "gemini-pro",
+      "api_key_env": "GEMINI_API_KEY"
+    },
+    {
+      "name": "openrouter",
+      "default_model": "openrouter/deepseek/deepseek-r1-distill-llama-8b",
+      "api_key_env": "OPENROUTER_API_KEY"
+    },
+    {
+      "name": "deepseek",
+      "default_model": "deepseek-r1-distill-llama-8b",
+      "api_key_env": "DEEPSEEK_API_KEY"
+    },
+    {
+      "name": "anthropic",
+      "default_model": "claude-3-sonnet-20240229",
+      "api_key_env": "ANTHROPIC_API_KEY"
+    },
+    {
+      "name": "groq",
+      "default_model": "llama3-8b-8192",
+      "api_key_env": "GROQ_API_KEY"
+    },
+    {
+      "name": "mistral",
+      "default_model": "mistral-large-latest",
+      "api_key_env": "MISTRAL_API_KEY"
+    },
+    {
+      "name": "openai",
+      "default_model": "gpt-3.5-turbo",
+      "api_key_env": "OPENAI_API_KEY"
+    }
+  ]
+} 
