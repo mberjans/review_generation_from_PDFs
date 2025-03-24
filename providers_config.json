@@ -2,12 +2,12 @@
   "providers": [
     {
       "name": "gemini",
-      "default_model": "gemini-pro",
+      "default_model": "gemini-2.0-flash-thinking-exp-01-21",
       "api_key_env": "GEMINI_API_KEY"
     },
     {
       "name": "openrouter",
-      "default_model": "openrouter/deepseek/deepseek-r1-distill-llama-8b",
+      "default_model": "deepseek/deepseek/deepseek-r1-zero:free",
       "api_key_env": "OPENROUTER_API_KEY"
     },
     {
@@ -17,7 +17,7 @@
     },
     {
       "name": "anthropic",
-      "default_model": "claude-3-sonnet-20240229",
+      "default_model": "claude-3-5-sonnet-20241022",
       "api_key_env": "ANTHROPIC_API_KEY"
     },
     {

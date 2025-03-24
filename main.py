@@ -751,6 +751,14 @@ def main():
         if custom_provider_order:
             logger.info(f"Using custom provider order: {', '.join(custom_provider_order)}")
         
+        # Create a "reviews" directory if it doesn't exist
+        reviews_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'reviews')
+        if not os.path.exists(reviews_dir):
+            os.makedirs(reviews_dir)
+            logger.info(f"Created reviews directory at: {reviews_dir}")
+        else:
+            logger.info(f"Saving reviews to existing directory: {reviews_dir}")
+        
         summaries = []
         with ThreadPoolExecutor(max_workers=4) as executor:
             futures = [executor.submit(process_pdf, os.path.join(pdf_folder, pdf), args.individual_summary_length) 
@@ -771,13 +779,16 @@ def main():
         
         paper_list = create_paper_list(summaries)
         
-        output_filename = f'literature_review_{datetime.now().strftime("%Y%m%d_%H%M%S")}.md'
-        with open(output_filename, 'w') as f:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_filename = f'literature_review_{timestamp}.md'
+        output_path = os.path.join(reviews_dir, output_filename)
+        
+        with open(output_path, 'w') as f:
             f.write(literature_review)
             f.write("\n\n")
             f.write(paper_list)
         
-        logger.info(f"Literature review completed and saved as {output_filename}")
+        logger.info(f"Literature review completed and saved as {output_path}")
     
     except FileNotFoundError as e:
         logger.error(str(e))
