@@ -193,29 +193,40 @@ def call_gemini(prompt: str, system_message: str, max_tokens: int, temperature: 
         import google.generativeai as genai
         genai.configure(api_key=api_key)
         
-        # Get available models
+        # Get available models to verify the model exists
         models = genai.list_models()
         available_models = [model.name for model in models]
         logger.info(f"Available Gemini models: {available_models}")
         
-        # Find an appropriate model
-        model_name = None
-        for name in available_models:
-            if "gemini-1.5" in name:
-                model_name = name
+        # Get the model from the config file
+        providers = load_providers_config()
+        for provider in providers:
+            if provider["name"] == "gemini":
+                model_name = provider["default_model"]
                 break
-            elif "gemini-1.0-pro" in name:
-                model_name = name
-                break
+        else:
+            model_name = "models/gemini-2.0-flash-thinking-exp-01-21"
         
-        if not model_name:
-            # Fall back to the first available model
-            model_name = available_models[0] if available_models else None
-        
-        if not model_name:
-            raise ProviderError("No Gemini models available")
-            
         logger.info(f"Using Gemini model: {model_name}")
+        
+        # Verify the model exists in available models
+        if model_name not in available_models:
+            logger.warning(f"Model {model_name} not found in available models. Using fallback.")
+            # Try with different formatting
+            alt_model_name = model_name.replace("models/", "")
+            if f"models/{alt_model_name}" in available_models:
+                model_name = f"models/{alt_model_name}"
+            elif alt_model_name in available_models:
+                model_name = alt_model_name
+            else:
+                # Last resort: use any available gemini model
+                for name in available_models:
+                    if "gemini" in name:
+                        model_name = name
+                        logger.warning(f"Using fallback Gemini model: {model_name}")
+                        break
+                else:
+                    raise ProviderError("No Gemini models available")
         
         # Combine system message and prompt for Gemini
         full_prompt = f"{system_message}\n\n{prompt}"
@@ -624,6 +635,12 @@ def process_pdf(file_path: str, text_limit: int = 6000) -> PaperSummary:
 @retry(stop=stop_after_attempt(3), wait=wait_random_exponential(min=1, max=60))
 def synthesize_reviews(summaries: List[PaperSummary], word_limit: int = 2500) -> str:
     """Synthesize multiple paper summaries into a comprehensive literature review."""
+    # Create a list of citations for reference
+    citations = []
+    for summary in summaries:
+        authors = summary.authors[0].split()[-1] if summary.authors else "Unknown"
+        citations.append(f"{authors} ({summary.year})")
+    
     prompt = f"""Create a comprehensive literature review based on the following paper summaries. 
     Focus on synthesizing information, comparing and contrasting key arguments, methodologies, and significance of findings. 
     Highlight any contradictions, agreements, or trends between authors. 
@@ -631,19 +648,33 @@ def synthesize_reviews(summaries: List[PaperSummary], word_limit: int = 2500) ->
     Identify gaps in the current research and suggest future research directions.
     Keep the review under {word_limit} words.
 
-    Summaries: {[summary.dict() for summary in summaries]}
+    IMPORTANT: Use proper in-text citations throughout the review. For each point, finding, or argument discussed, include the relevant citation in parentheses.
+    Available citations: {', '.join(citations)}
+    
+    For example:
+    - Single author: (Smith, 2020)
+    - When discussing multiple papers: (Smith, 2020; Jones, 2021)
+    - When the finding is directly quoted or central: Smith (2020) demonstrated that...
+
+    Paper Summaries: {[summary.dict() for summary in summaries]}
 
     Structure the review as follows:
-    1. Introduction
-    2. Theoretical Frameworks
-    3. Methodological Approaches
-    4. Synthesis of Main Arguments and Findings
-    5. Significance and Implications
-    6. Gaps and Future Research Directions
-    7. Conclusion"""
+    1. Introduction (with overview of the field and key themes)
+    2. Theoretical Frameworks (with citations for each framework discussed)
+    3. Methodological Approaches (with citations for each approach)
+    4. Synthesis of Main Arguments and Findings (with citations for each point)
+    5. Significance and Implications (with citations supporting each implication)
+    6. Gaps and Future Research Directions (citing relevant papers that identify these gaps)
+    7. Conclusion
+
+    Remember to:
+    - Include citations for every major point, finding, or argument
+    - Compare and contrast findings across multiple papers where relevant
+    - Use proper citation format consistently throughout the text"""
 
     try:
-        system_message = "You are a helpful assistant that creates comprehensive, well-structured literature reviews."
+        system_message = """You are a helpful assistant that creates comprehensive, well-structured literature reviews.
+        Always include proper academic in-text citations when discussing findings, methods, or arguments from the papers."""
         response = call_provider_with_fallback(
             prompt=prompt,
             system_message=system_message,

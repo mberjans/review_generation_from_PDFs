@@ -2,7 +2,7 @@
   "providers": [
     {
       "name": "gemini",
-      "default_model": "gemini-2.0-flash-thinking-exp-01-21",
+      "default_model": "models/gemini-1.5-pro-latest",
       "api_key_env": "GEMINI_API_KEY"
     },
     {
